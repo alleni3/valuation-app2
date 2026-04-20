@@ -1,185 +1,115 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import requests
 from datetime import datetime
 import io
 
 # ─────────────────────────────────────────
-# 법정동 데이터 로드
+# 설정
 # ─────────────────────────────────────────
-@st.cache_data(show_spinner="법정동 데이터 로딩 중...")
-def load_beopjeongdong():
-    """
-    행정표준코드관리시스템 법정동코드 TXT 로드.
-    네트워크 불가 시 내장 샘플로 폴백.
-    
-    ※ 전체 데이터 사용법:
-      1. https://www.code.go.kr/stdcode/regCodeL.do 에서 '법정동코드 전체자료.zip' 다운로드
-      2. 압축 해제 후 '법정동코드 전체자료.txt' 를 앱과 같은 폴더에 저장
-      3. 아래 로컬 파일 로드 코드가 자동으로 해당 파일을 우선 사용합니다.
-    """
-    import os
+# 도로명주소 개발자센터 (juso.go.kr) API 키
+# 발급: https://www.juso.go.kr/addrlink/devAddrLinkRequestGuide.do
+# 무료 / 회원가입 없이 개발용 키 즉시 발급 가능
+JUSO_API_KEY = st.secrets.get("JUSO_API_KEY", "devU01TX0FVVEgyMDI1MDQyMDE0MjgxNTExNTAxNTQ=")
 
-    # ① 로컬 TXT 파일 우선 (전체 법정동 데이터)
-    local_path = "법정동코드 전체자료.txt"
-    if os.path.exists(local_path):
-        try:
-            df = pd.read_csv(local_path, sep="\t", dtype=str, encoding="cp949", on_bad_lines="skip")
-            df.columns = df.columns.str.strip()
-            if "법정동코드" in df.columns and "법정동명" in df.columns:
-                df = df[df["폐지여부"].str.strip() == "존재"].copy()
-                df["법정동명"] = df["법정동명"].str.strip()
-                def parse_addr(name):
-                    parts = name.split()
-                    return (parts[0] if len(parts)>0 else "",
-                            parts[1] if len(parts)>1 else "",
-                            " ".join(parts[2:]) if len(parts)>2 else "")
-                df[["시도","시군구","읍면동리"]] = df["법정동명"].apply(lambda x: pd.Series(parse_addr(x)))
-                return df
-        except Exception:
-            pass
-
-    # ② GitHub 공개 미러 시도
+# ─────────────────────────────────────────
+# 법정동 검색 (juso.go.kr 법정동코드 API)
+# ─────────────────────────────────────────
+def search_beopjeongdong(keyword: str):
+    """
+    행정안전부 주소기반산업지원서비스 법정동코드 검색 API
+    endpoint: https://business.juso.go.kr/addrlink/addrLinkApiJsonp.do
+    반환: list of dict {법정동명, 시도, 시군구, 읍면동, 법정동코드}
+    """
+    if not keyword or len(keyword.strip()) < 1:
+        return []
     try:
-        df = pd.read_csv(
-            "https://raw.githubusercontent.com/raqoon886/Local_HangJeongDong/master/hangjeongdong_master.csv",
-            dtype=str, encoding="utf-8"
-        )
-        # 컬럼: 시도명, 시군구명, 읍면동명, 법정동코드 등
-        if "시도명" in df.columns:
-            df = df.rename(columns={"시도명":"시도","시군구명":"시군구","읍면동명":"읍면동리"})
-            df["법정동명"] = df["시도"] + " " + df["시군구"] + " " + df["읍면동리"]
-            df["폐지여부"] = "존재"
-            return df[["법정동명","시도","시군구","읍면동리","폐지여부"]].dropna()
-    except Exception:
-        pass
+        url = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
+        params = {
+            "currentPage": 1,
+            "countPerPage": 30,
+            "keyword": keyword.strip(),
+            "confmKey": JUSO_API_KEY,
+            "resultType": "json",
+            "hstryYn": "N",
+            "addrDetailYn": "N",
+        }
+        resp = requests.get(url, params=params, timeout=5)
+        data = resp.json()
+        results = data.get("results", {}).get("juso", []) or []
 
-    # ③ 내장 샘플 (오프라인 폴백 — 주요 법정동 150여건)
-    sample = [
-        ("서울특별시 종로구 청운동","서울특별시","종로구","청운동"),
-        ("서울특별시 종로구 삼청동","서울특별시","종로구","삼청동"),
-        ("서울특별시 종로구 인사동","서울특별시","종로구","인사동"),
-        ("서울특별시 종로구 혜화동","서울특별시","종로구","혜화동"),
-        ("서울특별시 중구 명동","서울특별시","중구","명동"),
-        ("서울특별시 중구 을지로동","서울특별시","중구","을지로동"),
-        ("서울특별시 용산구 이태원동","서울특별시","용산구","이태원동"),
-        ("서울특별시 용산구 한남동","서울특별시","용산구","한남동"),
-        ("서울특별시 성동구 성수동1가","서울특별시","성동구","성수동1가"),
-        ("서울특별시 성동구 왕십리동","서울특별시","성동구","왕십리동"),
-        ("서울특별시 광진구 자양동","서울특별시","광진구","자양동"),
-        ("서울특별시 광진구 화양동","서울특별시","광진구","화양동"),
-        ("서울특별시 마포구 합정동","서울특별시","마포구","합정동"),
-        ("서울특별시 마포구 상수동","서울특별시","마포구","상수동"),
-        ("서울특별시 마포구 서교동","서울특별시","마포구","서교동"),
-        ("서울특별시 마포구 망원동","서울특별시","마포구","망원동"),
-        ("서울특별시 서대문구 연희동","서울특별시","서대문구","연희동"),
-        ("서울특별시 서대문구 신촌동","서울특별시","서대문구","신촌동"),
-        ("서울특별시 은평구 응암동","서울특별시","은평구","응암동"),
-        ("서울특별시 강서구 화곡동","서울특별시","강서구","화곡동"),
-        ("서울특별시 강서구 마곡동","서울특별시","강서구","마곡동"),
-        ("서울특별시 양천구 목동","서울특별시","양천구","목동"),
-        ("서울특별시 구로구 신도림동","서울특별시","구로구","신도림동"),
-        ("서울특별시 구로구 구로동","서울특별시","구로구","구로동"),
-        ("서울특별시 금천구 가산동","서울특별시","금천구","가산동"),
-        ("서울특별시 영등포구 여의도동","서울특별시","영등포구","여의도동"),
-        ("서울특별시 영등포구 영등포동","서울특별시","영등포구","영등포동"),
-        ("서울특별시 영등포구 당산동","서울특별시","영등포구","당산동"),
-        ("서울특별시 동작구 노량진동","서울특별시","동작구","노량진동"),
-        ("서울특별시 동작구 상도동","서울특별시","동작구","상도동"),
-        ("서울특별시 관악구 봉천동","서울특별시","관악구","봉천동"),
-        ("서울특별시 관악구 신림동","서울특별시","관악구","신림동"),
-        ("서울특별시 서초구 서초동","서울특별시","서초구","서초동"),
-        ("서울특별시 서초구 반포동","서울특별시","서초구","반포동"),
-        ("서울특별시 서초구 잠원동","서울특별시","서초구","잠원동"),
-        ("서울특별시 서초구 방배동","서울특별시","서초구","방배동"),
-        ("서울특별시 서초구 양재동","서울특별시","서초구","양재동"),
-        ("서울특별시 강남구 역삼동","서울특별시","강남구","역삼동"),
-        ("서울특별시 강남구 논현동","서울특별시","강남구","논현동"),
-        ("서울특별시 강남구 압구정동","서울특별시","강남구","압구정동"),
-        ("서울특별시 강남구 청담동","서울특별시","강남구","청담동"),
-        ("서울특별시 강남구 삼성동","서울특별시","강남구","삼성동"),
-        ("서울특별시 강남구 대치동","서울특별시","강남구","대치동"),
-        ("서울특별시 강남구 도곡동","서울특별시","강남구","도곡동"),
-        ("서울특별시 강남구 개포동","서울특별시","강남구","개포동"),
-        ("서울특별시 강남구 일원동","서울특별시","강남구","일원동"),
-        ("서울특별시 강남구 수서동","서울특별시","강남구","수서동"),
-        ("서울특별시 강남구 신사동","서울특별시","강남구","신사동"),
-        ("서울특별시 송파구 잠실동","서울특별시","송파구","잠실동"),
-        ("서울특별시 송파구 가락동","서울특별시","송파구","가락동"),
-        ("서울특별시 송파구 문정동","서울특별시","송파구","문정동"),
-        ("서울특별시 송파구 방이동","서울특별시","송파구","방이동"),
-        ("서울특별시 강동구 천호동","서울특별시","강동구","천호동"),
-        ("서울특별시 강동구 암사동","서울특별시","강동구","암사동"),
-        ("서울특별시 노원구 상계동","서울특별시","노원구","상계동"),
-        ("서울특별시 강북구 미아동","서울특별시","강북구","미아동"),
-        ("서울특별시 도봉구 쌍문동","서울특별시","도봉구","쌍문동"),
-        ("서울특별시 성북구 길음동","서울특별시","성북구","길음동"),
-        ("부산광역시 해운대구 우동","부산광역시","해운대구","우동"),
-        ("부산광역시 해운대구 중동","부산광역시","해운대구","중동"),
-        ("부산광역시 해운대구 좌동","부산광역시","해운대구","좌동"),
-        ("부산광역시 수영구 민락동","부산광역시","수영구","민락동"),
-        ("부산광역시 남구 대연동","부산광역시","남구","대연동"),
-        ("부산광역시 부산진구 전포동","부산광역시","부산진구","전포동"),
-        ("부산광역시 동래구 온천동","부산광역시","동래구","온천동"),
-        ("부산광역시 북구 구포동","부산광역시","북구","구포동"),
-        ("부산광역시 강서구 명지동","부산광역시","강서구","명지동"),
-        ("부산광역시 기장군 기장읍 기장리","부산광역시","기장군","기장읍 기장리"),
-        ("대구광역시 수성구 범어동","대구광역시","수성구","범어동"),
-        ("대구광역시 수성구 황금동","대구광역시","수성구","황금동"),
-        ("대구광역시 달서구 월성동","대구광역시","달서구","월성동"),
-        ("대구광역시 북구 칠성동","대구광역시","북구","칠성동"),
-        ("대구광역시 중구 동성로","대구광역시","중구","동성로"),
-        ("인천광역시 연수구 송도동","인천광역시","연수구","송도동"),
-        ("인천광역시 연수구 연수동","인천광역시","연수구","연수동"),
-        ("인천광역시 남동구 간석동","인천광역시","남동구","간석동"),
-        ("인천광역시 부평구 부평동","인천광역시","부평구","부평동"),
-        ("인천광역시 서구 청라동","인천광역시","서구","청라동"),
-        ("인천광역시 미추홀구 주안동","인천광역시","미추홀구","주안동"),
-        ("광주광역시 북구 용봉동","광주광역시","북구","용봉동"),
-        ("광주광역시 광산구 수완동","광주광역시","광산구","수완동"),
-        ("광주광역시 서구 치평동","광주광역시","서구","치평동"),
-        ("대전광역시 유성구 봉명동","대전광역시","유성구","봉명동"),
-        ("대전광역시 서구 둔산동","대전광역시","서구","둔산동"),
-        ("울산광역시 남구 삼산동","울산광역시","남구","삼산동"),
-        ("세종특별자치시 어진동","세종특별자치시","세종시","어진동"),
-        ("세종특별자치시 보람동","세종특별자치시","세종시","보람동"),
-        ("경기도 수원시 장안구 율전동","경기도","수원시 장안구","율전동"),
-        ("경기도 수원시 팔달구 인계동","경기도","수원시 팔달구","인계동"),
-        ("경기도 수원시 영통구 영통동","경기도","수원시 영통구","영통동"),
-        ("경기도 성남시 분당구 분당동","경기도","성남시 분당구","분당동"),
-        ("경기도 성남시 분당구 서현동","경기도","성남시 분당구","서현동"),
-        ("경기도 성남시 분당구 정자동","경기도","성남시 분당구","정자동"),
-        ("경기도 용인시 수지구 풍덕천동","경기도","용인시 수지구","풍덕천동"),
-        ("경기도 용인시 기흥구 구갈동","경기도","용인시 기흥구","구갈동"),
-        ("경기도 고양시 일산동구 장항동","경기도","고양시 일산동구","장항동"),
-        ("경기도 고양시 일산서구 주엽동","경기도","고양시 일산서구","주엽동"),
-        ("경기도 부천시 원미구 중동","경기도","부천시 원미구","중동"),
-        ("경기도 안양시 동안구 평촌동","경기도","안양시 동안구","평촌동"),
-        ("경기도 남양주시 다산동","경기도","남양주시","다산동"),
-        ("경기도 화성시 동탄동","경기도","화성시","동탄동"),
-        ("경기도 평택시 고덕동","경기도","평택시","고덕동"),
-        ("경기도 파주시 운정동","경기도","파주시","운정동"),
-        ("경기도 김포시 장기동","경기도","김포시","장기동"),
-        ("충청북도 청주시 상당구 중앙동","충청북도","청주시 상당구","중앙동"),
-        ("충청북도 청주시 흥덕구 복대동","충청북도","청주시 흥덕구","복대동"),
-        ("충청남도 천안시 동남구 신부동","충청남도","천안시 동남구","신부동"),
-        ("충청남도 천안시 서북구 불당동","충청남도","천안시 서북구","불당동"),
-        ("충청남도 아산시 배방읍 장재리","충청남도","아산시","배방읍 장재리"),
-        ("전라북도 전주시 완산구 효자동","전라북도","전주시 완산구","효자동"),
-        ("전라북도 전주시 덕진구 금암동","전라북도","전주시 덕진구","금암동"),
-        ("전라남도 목포시 상동","전라남도","목포시","상동"),
-        ("전라남도 순천시 조례동","전라남도","순천시","조례동"),
-        ("경상북도 포항시 남구 대도동","경상북도","포항시 남구","대도동"),
-        ("경상북도 구미시 형곡동","경상북도","구미시","형곡동"),
-        ("경상남도 창원시 성산구 상남동","경상남도","창원시 성산구","상남동"),
-        ("경상남도 김해시 내외동","경상남도","김해시","내외동"),
-        ("제주특별자치도 제주시 노형동","제주특별자치도","제주시","노형동"),
-        ("제주특별자치도 제주시 연동","제주특별자치도","제주시","연동"),
-        ("제주특별자치도 서귀포시 서귀동","제주특별자치도","서귀포시","서귀동"),
-    ]
-    df = pd.DataFrame(sample, columns=["법정동명","시도","시군구","읍면동리"])
-    df["폐지여부"] = "존재"
-    return df
+        seen = set()
+        parsed = []
+        for item in results:
+            # 법정동 분리
+            addr_parts = item.get("addrDetail", "") or ""
+            full = item.get("roadAddr", "") or item.get("jibunAddr", "") or ""
+
+            si_do      = item.get("siNm", "").strip()
+            si_gun_gu  = item.get("sggNm", "").strip()
+            eup_myeon  = item.get("emdNm", "").strip()
+
+            if not (si_do and si_gun_gu and eup_myeon):
+                continue
+            key = (si_do, si_gun_gu, eup_myeon)
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append({
+                "label": f"{si_do} {si_gun_gu} {eup_myeon}",
+                "시도": si_do,
+                "시군구": si_gun_gu,
+                "읍면동": eup_myeon,
+            })
+        return parsed
+
+    except Exception as e:
+        return []
+
+
+def search_beopjeongdong_v2(keyword: str):
+    """
+    법정동코드 전용 API (행정안전부 행정표준코드관리시스템)
+    endpoint: https://www.code.go.kr/stdcode/regCodeL.do (HTML) →
+    대신 공공데이터포털 법정동 API 사용
+    """
+    if not keyword or len(keyword.strip()) < 1:
+        return []
+    try:
+        # 공공데이터포털 법정동코드 API (자동승인 / 별도 key 불필요 테스트)
+        url = "https://grpc-proxy-server-mkvo6j4wsq-du.a.run.app/v1/regcodes"
+        params = {
+            "regcode_pattern": f"*{keyword.strip()}*",
+            "is_ignore_zero": "true"
+        }
+        resp = requests.get(url, params=params, timeout=5)
+        items = resp.json().get("regcodes", [])
+
+        seen = set()
+        parsed = []
+        for item in items:
+            name = item.get("name", "").strip()
+            parts = name.split()
+            if len(parts) < 3:
+                continue
+            si_do     = parts[0]
+            si_gun_gu = parts[1]
+            eup_myeon = " ".join(parts[2:])
+            key = (si_do, si_gun_gu, eup_myeon)
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append({
+                "label": f"{si_do} {si_gun_gu} {eup_myeon}",
+                "시도": si_do,
+                "시군구": si_gun_gu,
+                "읍면동": eup_myeon,
+                "코드": item.get("code", ""),
+            })
+        return parsed[:40]
+    except Exception:
+        return []
 
 
 # ─────────────────────────────────────────
@@ -227,7 +157,8 @@ html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
     box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 .metric-card .label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.3rem; }
-.metric-card .value { font-family: 'IBM Plex Mono', monospace; font-size: 1.1rem; font-weight: 600; color: #1e3a5f; }
+.metric-card .value { font-family: 'IBM Plex Mono', monospace; font-size: 1.1rem;
+    font-weight: 600; color: #1e3a5f; }
 .metric-card .value.total { color: #c0392b; font-size: 1.3rem; }
 .section-header {
     background: #f0f4f8; border-left: 4px solid #2d6a9f;
@@ -307,68 +238,68 @@ def to_excel(df):
 # ─────────────────────────────────────────
 # 법정동 검색 위젯
 # ─────────────────────────────────────────
-def address_search_widget(load_data, bj_df):
-    """
-    두 가지 모드:
-      - 🔍 키워드 검색: 동명 일부 입력 → 결과 목록 선택
-      - 📂 단계별 선택: 시도 → 시군구 → 읍면동 순차 드롭다운
-    반환: (si_do, si_gun_gu, eup_myeon_dong)
-    """
-    si_do = str(load_data.get('si_do', '') or '')
-    si_gun_gu = str(load_data.get('si_gun_gu', '') or '')
+def address_search_widget(load_data):
+    si_do          = str(load_data.get('si_do', '') or '')
+    si_gun_gu      = str(load_data.get('si_gun_gu', '') or '')
     eup_myeon_dong = str(load_data.get('eup_myeon_dong', '') or '')
 
-    mode = st.radio("주소 입력 방식", ["🔍 키워드 검색", "📂 단계별 선택"],
-                    horizontal=True, key="addr_mode")
+    st.markdown('<div class="section-header">📍 소재지 — 법정동 검색</div>', unsafe_allow_html=True)
 
-    if mode == "🔍 키워드 검색":
-        kw = st.text_input("동·읍·면·리 검색",
-                           placeholder="예) 역삼동, 분당, 송도, 해운대",
-                           key="addr_kw")
-        if kw.strip():
-            hits = bj_df[bj_df["법정동명"].str.contains(kw.strip(), na=False)].head(40)
-            if hits.empty:
-                st.warning("검색 결과가 없습니다. 다른 키워드를 입력해 보세요.")
-                st.caption("💡 전체 법정동이 필요하면 code.go.kr 에서 '법정동코드 전체자료.txt' 를 다운로드하여 앱 폴더에 저장하세요.")
-            else:
-                options = hits["법정동명"].tolist()
-                default_idx = 0
-                current_full = f"{si_do} {si_gun_gu} {eup_myeon_dong}".strip()
-                for i, o in enumerate(options):
-                    if o.strip() == current_full:
-                        default_idx = i; break
-                chosen = st.selectbox(f"검색 결과 ({len(hits)}건)", options,
-                                      index=default_idx, key="addr_kw_sel")
-                row = hits[hits["법정동명"] == chosen].iloc[0]
-                si_do = row["시도"]
-                si_gun_gu = row["시군구"]
-                eup_myeon_dong = row["읍면동리"]
-        else:
-            st.caption("동·읍·면·리 이름 일부를 입력하면 법정동 목록이 표시됩니다.")
+    # 검색창
+    col_kw, col_btn = st.columns([4, 1])
+    kw = col_kw.text_input(
+        "법정동 검색",
+        placeholder="예) 역삼동, 분당, 해운대, 송도동",
+        key="addr_kw",
+        label_visibility="collapsed"
+    )
+    search_clicked = col_btn.button("🔍 검색", use_container_width=True, key="addr_search_btn")
 
-    else:  # 단계별 선택
-        sido_list = sorted(bj_df["시도"].dropna().unique().tolist())
-        sido_idx = sido_list.index(si_do) if si_do in sido_list else 0
-        c1, c2, c3 = st.columns(3)
-        sel_sido = c1.selectbox("시 / 도", sido_list, index=sido_idx, key="addr_sido")
+    # 검색 실행
+    if search_clicked and kw.strip():
+        with st.spinner("법정동 검색 중..."):
+            results = search_beopjeongdong_v2(kw.strip())
+            if not results:
+                results = search_beopjeongdong(kw.strip())
+        st.session_state["addr_results"] = results
+        st.session_state["addr_selected_idx"] = 0
 
-        sgg = sorted(bj_df[bj_df["시도"] == sel_sido]["시군구"].dropna().unique().tolist())
-        sgg = [s for s in sgg if s]
-        sgg_idx = sgg.index(si_gun_gu) if si_gun_gu in sgg else 0
-        sel_sgg = c2.selectbox("시 / 군 / 구", sgg, index=sgg_idx, key="addr_sgg") if sgg else ""
+    results = st.session_state.get("addr_results", [])
 
-        emd = sorted(bj_df[(bj_df["시도"]==sel_sido) & (bj_df["시군구"]==sel_sgg)]["읍면동리"].dropna().unique().tolist())
-        emd = [e for e in emd if e]
-        emd_idx = emd.index(eup_myeon_dong) if eup_myeon_dong in emd else 0
-        sel_emd = c3.selectbox("읍 / 면 / 동 / 리", emd, index=emd_idx, key="addr_emd") if emd else ""
+    if results:
+        options = [r["label"] for r in results]
 
-        si_do, si_gun_gu, eup_myeon_dong = sel_sido, sel_sgg, sel_emd
+        # 수정 모드에서 기존값 기본 선택
+        current = f"{si_do} {si_gun_gu} {eup_myeon_dong}".strip()
+        default_idx = 0
+        for i, o in enumerate(options):
+            if o.strip() == current:
+                default_idx = i; break
 
-    # 선택 주소 미리보기
+        chosen_label = st.selectbox(
+            f"검색 결과 ({len(results)}건) — 선택하세요",
+            options,
+            index=default_idx,
+            key="addr_select"
+        )
+        chosen = next((r for r in results if r["label"] == chosen_label), None)
+        if chosen:
+            si_do          = chosen["시도"]
+            si_gun_gu      = chosen["시군구"]
+            eup_myeon_dong = chosen["읍면동"]
+
+    elif search_clicked and kw.strip():
+        st.warning("검색 결과가 없습니다. 다른 키워드로 다시 검색해 보세요.")
+
+    # 현재 선택 주소 미리보기
     if si_do:
         full = " ".join(filter(None, [si_do, si_gun_gu, eup_myeon_dong]))
-        st.markdown(f'<div class="addr-preview">📌 <strong>선택 소재지:</strong> &nbsp;{full}</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="addr-preview">📌 <strong>소재지:</strong> &nbsp;{full}</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.caption("법정동명을 검색하면 시도/시군구/읍면동이 자동으로 입력됩니다.")
 
     return si_do, si_gun_gu, eup_myeon_dong
 
@@ -386,11 +317,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-bj_df = load_beopjeongdong()
-
-# ─────────────────────────────────────────
-# 탭
-# ─────────────────────────────────────────
 tab_input, tab_list, tab_report = st.tabs(["✏️ 신규 / 수정 입력", "📋 기록 조회 · 검색", "📄 보고서 출력"])
 
 # ═══════════════════════════════════════
@@ -407,7 +333,9 @@ with tab_input:
             load_data = row.iloc[0].to_dict()
         st.info(f"📝 수정 모드 — ID #{edit_id}")
         if st.button("➕ 새로 작성"):
-            st.session_state.edit_id = None; st.rerun()
+            st.session_state.edit_id = None
+            st.session_state.pop("addr_results", None)
+            st.rerun()
 
     # ── 0. 기본 정보 ──
     st.markdown('<div class="section-header">📌 기본 정보</div>', unsafe_allow_html=True)
@@ -424,8 +352,7 @@ with tab_input:
     # ── 1. 토지 ──
     st.markdown('<div class="section-header">🌏 1. 토지 평가</div>', unsafe_allow_html=True)
 
-    # 법정동 검색
-    si_do, si_gun_gu, eup_myeon_dong = address_search_widget(load_data, bj_df)
+    si_do, si_gun_gu, eup_myeon_dong = address_search_widget(load_data)
 
     st.write("")
     a4, a5, a6 = st.columns(3)
@@ -443,15 +370,15 @@ with tab_input:
 
     # ── 2. 건물 ──
     st.markdown('<div class="section-header">🏢 2. 건물 평가 (원가법)</div>', unsafe_allow_html=True)
-    b_addr = st.text_input("건물 비고(명칭 등)", value=str(load_data.get('b_addr', '') or ''))
+    b_addr    = st.text_input("건물 비고(명칭 등)", value=str(load_data.get('b_addr', '') or ''))
     bc1, bc2, bc3, bc4 = st.columns(4)
     b_re_cost = bc1.number_input("재조달원가 (원/㎡)", value=int(load_data.get('b_re_cost', 0) or 0))
     b_area    = bc2.number_input("건물 면적 (㎡)",     value=float(load_data.get('b_area', 0.0) or 0))
     b_life    = bc3.number_input("내용연수 (년)",       value=int(load_data.get('b_total_life', 40) or 40))
     b_passed  = bc4.number_input("경과연수 (년)",       value=int(load_data.get('b_passed', 0) or 0))
-    b_unit = int(b_re_cost * (1 - b_passed / b_life)) if b_life > 0 else 0
-    b_total = b_unit * b_area
-    bm1, bm2 = st.columns(2)
+    b_unit    = int(b_re_cost * (1 - b_passed / b_life)) if b_life > 0 else 0
+    b_total   = b_unit * b_area
+    bm1, bm2  = st.columns(2)
     bm1.markdown(f'<div class="metric-card"><div class="label">건물 단가</div><div class="value">₩ {b_unit:,.0f} / ㎡</div></div>', unsafe_allow_html=True)
     bm2.markdown(f'<div class="metric-card"><div class="label">건물 예상가</div><div class="value">₩ {b_total:,.0f}</div></div>', unsafe_allow_html=True)
 
@@ -459,8 +386,8 @@ with tab_input:
     st.markdown('<div class="section-header">🏬 3. 구분건물 평가</div>', unsafe_allow_html=True)
     u_addr  = st.text_input("구분건물 비고(단지명/호수)", value=str(load_data.get('u_addr', '') or ''))
     uc1, uc2, uc3 = st.columns(3)
-    u_area  = uc1.number_input("전유면적 (㎡)",         value=float(load_data.get('u_area', 0.0) or 0))
-    u_price = uc2.number_input("구분건물 단가 (원/㎡)",  value=int(load_data.get('u_price', 0) or 0))
+    u_area  = uc1.number_input("전유면적 (㎡)",        value=float(load_data.get('u_area', 0.0) or 0))
+    u_price = uc2.number_input("구분건물 단가 (원/㎡)", value=int(load_data.get('u_price', 0) or 0))
     u_total = u_area * u_price
     uc3.markdown(f'<div class="metric-card"><div class="label">구분건물 예상가</div><div class="value">₩ {u_total:,.0f}</div></div>', unsafe_allow_html=True)
 
@@ -487,6 +414,7 @@ with tab_input:
             else:
                 insert_entry((now_str,) + row_data)
                 st.success("✅ 신규 저장 완료!")
+            st.session_state.pop("addr_results", None)
             st.rerun()
 
 # ═══════════════════════════════════════
@@ -495,7 +423,7 @@ with tab_input:
 with tab_list:
     st.markdown('<div class="section-header">🔍 검색 · 필터</div>', unsafe_allow_html=True)
     fc1, fc2, fc3, fc4 = st.columns([2,1,1,1])
-    search_kw   = fc1.text_input("검색어 (주소·의뢰인)", placeholder="예: 강남구, 홍길동")
+    search_kw = fc1.text_input("검색어 (주소·의뢰인)", placeholder="예: 강남구, 홍길동")
     conn = get_conn()
     sido_list_db = pd.read_sql_query("SELECT DISTINCT si_do FROM evaluations WHERE si_do!=''", conn)['si_do'].tolist()
     conn.close()
@@ -514,13 +442,15 @@ with tab_list:
         st.divider()
         for _, row in df.iterrows():
             addr = f"{row['si_do']} {row['si_gun_gu']} {row['eup_myeon_dong']} {row['main_bun']}-{row['sub_bun']}"
-            purpose_tag = f'<span class="tag-chip">{row.get("purpose","")}</span>' if row.get("purpose") else ""
+            pt = f'<span class="tag-chip">{row.get("purpose","")}</span>' if row.get("purpose") else ""
             ca, cb, cc, cd = st.columns([4,2,1,1])
-            ca.markdown(f"**#{row['id']}** {addr} {purpose_tag}", unsafe_allow_html=True)
+            ca.markdown(f"**#{row['id']}** {addr} {pt}", unsafe_allow_html=True)
             ca.caption(f"기준: {row['ref_date']}  |  등록: {row['reg_date']}  |  의뢰인: {row.get('client_name','')}")
             cb.markdown(f'<div style="text-align:right;font-family:IBM Plex Mono,monospace;font-weight:600;color:#c0392b">₩ {int(row["grand_total"]):,}</div>', unsafe_allow_html=True)
             if cc.button("✏️ 수정", key=f"edit_{row['id']}"):
-                st.session_state.edit_id = int(row['id']); st.rerun()
+                st.session_state.edit_id = int(row['id'])
+                st.session_state.pop("addr_results", None)
+                st.rerun()
             if cd.button("🗑️ 삭제", key=f"del_{row['id']}"):
                 delete_entry(int(row['id'])); st.rerun()
             st.divider()
@@ -531,8 +461,10 @@ with tab_list:
 with tab_report:
     st.markdown('<div class="section-header">📄 탁상감정 보고서 출력</div>', unsafe_allow_html=True)
     conn = get_conn()
-    all_df = pd.read_sql_query("SELECT id, si_do, si_gun_gu, eup_myeon_dong, main_bun, sub_bun, grand_total FROM evaluations ORDER BY id DESC", conn)
+    all_df = pd.read_sql_query(
+        "SELECT id, si_do, si_gun_gu, eup_myeon_dong, main_bun, sub_bun, grand_total FROM evaluations ORDER BY id DESC", conn)
     conn.close()
+
     if all_df.empty:
         st.info("저장된 기록이 없습니다.")
     else:
@@ -543,7 +475,10 @@ with tab_report:
         conn = get_conn()
         r = pd.read_sql_query(f"SELECT * FROM evaluations WHERE id={chosen_id}", conn).iloc[0]
         conn.close()
-        full_addr = " ".join(filter(None,[str(r['si_do']),str(r['si_gun_gu']),str(r['eup_myeon_dong']),str(r['bun_type']),f"{r['main_bun']}-{r['sub_bun']}"]))
+        full_addr = " ".join(filter(None, [
+            str(r['si_do']), str(r['si_gun_gu']), str(r['eup_myeon_dong']),
+            str(r['bun_type']), f"{r['main_bun']}-{r['sub_bun']}"]))
+
         html_report = f"""
         <div style="font-family:'Noto Sans KR',sans-serif;max-width:720px;margin:0 auto;
                     border:2px solid #1a2332;border-radius:12px;overflow:hidden;">
