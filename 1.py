@@ -23,26 +23,47 @@ init_db()
 # --- 페이지 설정 ---
 st.set_page_config(page_title="탁상감정 기록 관리 시스템", layout="wide")
 
+# --- 기록 삭제 함수 ---
+def delete_entry(entry_id):
+    conn = sqlite3.connect('valuation_data.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM evaluations WHERE id=?", (entry_id,))
+    conn.commit()
+    conn.close()
+
 # --- 사이드바: 기록 목록 조회 ---
 st.sidebar.header("📁 탁상감정 기록 목록")
 
 def get_list():
     conn = sqlite3.connect('valuation_data.db')
-    df = pd.read_sql_query("SELECT id, reg_date, land_addr, grand_total FROM evaluations ORDER BY id DESC", conn)
+    # 소재지(land_addr)와 총액(grand_total)을 불러옵니다.
+    df = pd.read_sql_query("SELECT id, reg_date, land_addr, u_addr, grand_total FROM evaluations ORDER BY id DESC", conn)
     conn.close()
     return df
 
 history_df = get_list()
 
-# 목록에서 선택
+# 목록 표시 및 선택
 selected_id = None
 if not history_df.empty:
-    # 목록 표시용 포맷팅
-    list_options = history_df.apply(lambda x: f"[{x['id']}] {x['reg_date']} | {x['land_addr'][:15]}...", axis=1).tolist()
-    selected_option = st.sidebar.selectbox("과거 기록 불러오기", ["새로 작성"] + list_options)
+    # 소재지가 비어있을 경우 구분건물 소재지를 표시하도록 처리
+    history_df['display_addr'] = history_df['land_addr'].replace('', None).fillna(history_df['u_addr']).fillna("주소 미입력")
+    
+    # 목록 표시용 포맷팅: [번호] 소재지 | 금액
+    list_options = history_df.apply(
+        lambda x: f"[{x['id']}] {x['display_addr'][:15]} | {x['grand_total']:,.0f}원", axis=1
+    ).tolist()
+    
+    selected_option = st.sidebar.selectbox("과거 기록 선택/조회", ["새로 작성"] + list_options)
     
     if selected_option != "새로 작성":
         selected_id = int(selected_option.split(']')[0][1:])
+        
+        # 삭제 버튼 추가
+        if st.sidebar.button("🗑️ 현재 선택건 삭제", help="삭제하면 복구할 수 없습니다."):
+            delete_entry(selected_id)
+            st.sidebar.warning(f"{selected_id}번 기록이 삭제되었습니다.")
+            st.rerun()
 
 # --- 데이터 불러오기 로직 ---
 load_data = {}
@@ -92,7 +113,7 @@ with st.expander("3. 구분건물 평가", expanded=True):
     u_total = u_area * u_price
     u3.metric("구분건물 예상가", f"{u_total:,.0f} 원")
 
-# --- 저장 기능 ---
+# --- 합계 및 저장 ---
 grand_total = l_total + b_total + u_total
 st.sidebar.subheader(f"총 예상가: {grand_total:,.0f} 원")
 
@@ -108,4 +129,4 @@ if st.sidebar.button("💾 탁상감정 결과 저장/완료"):
     conn.commit()
     conn.close()
     st.sidebar.success("성공적으로 저장되었습니다!")
-    st.rerun() # 목록 새로고침
+    st.rerun()
