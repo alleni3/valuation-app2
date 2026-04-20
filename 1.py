@@ -7,7 +7,15 @@ from datetime import datetime
 def init_db():
     conn = sqlite3.connect('valuation_data.db')
     c = conn.cursor()
-    # 주소 필드를 시도, 시군구, 읍면동 등으로 분리하여 생성
+    
+    # 1. 만약 기존 테이블에 si_do 컬럼이 없다면 테이블을 삭제하고 새로 만듦 (구조 업데이트용)
+    try:
+        c.execute("SELECT si_do FROM evaluations LIMIT 1")
+    except sqlite3.OperationalError:
+        # si_do 컬럼이 없어서 에러가 나면 기존 테이블 삭제
+        c.execute("DROP TABLE IF EXISTS evaluations")
+    
+    # 2. 테이블 생성 (새로운 주소 체계 포함)
     c.execute('''CREATE TABLE IF NOT EXISTS evaluations
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   reg_date TEXT, ref_date TEXT,
